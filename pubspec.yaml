@@ -1,0 +1,65 @@
+name: gyro_pong
+description: "Gyro Pong - Experience the future of mobile gaming with tilt-controlled paddle action. Break blocks, master levels, and challenge your reflexes in this innovative gyroscope-powered game."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  sensors_plus: ^6.1.2
+  google_mobile_ads: ^6.0.0
+  shared_preferences: ^2.1.1
+  audioplayers: ^6.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.3.10
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/sounds/hit.wav
+    - assets/sounds/gameover.wav
+    - assets/
+
+# flutter_launcher_icons:
+#   android: "launcher_icon"
+#   ios: true
+#   image_path: "assets/app_icon.png"
+#   min_sdk_android: 21
+#   web:
+#     generate: true
+#     image_path: "assets/app_icon.png"
+#     background_color: "#0D1B2A"
+#     theme_color: "#415A77"
+#   windows:
+#     generate: true
+#     image_path: "assets/app_icon.png"
+#     icon_size: 48
+#   macos:
+#     generate: true
+#     image_path: "assets/app_icon.png"
+
+# flutter_native_splash:
+#   color: "#0D1B2A"
+#   color_dark: "#0D1B2A"
+#   image: assets/splash_logo.png
+#   image_dark: assets/splash_logo.png
+#   branding: assets/branding.png
+#   branding_dark: assets/branding.png
+#   
+#   android_12:
+#     image: assets/splash_logo.png
+#     color: "#0D1B2A"
+#     image_dark: assets/splash_logo.png
+#     color_dark: "#0D1B2A"
+#   
+#   web: true
+#   android: true
+#   ios: true
