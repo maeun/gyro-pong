@@ -3,9 +3,9 @@
     "short_name": "gyro_pong",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0D1B2A",
+    "theme_color": "#415A77",
+    "description": "Gyro Pong - Experience the future of mobile gaming with tilt-controlled paddle action. Break blocks, master levels, and challenge your reflexes in this innovative gyroscope-powered game.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
