@@ -12,6 +12,44 @@ import 'package:audioplayers/audioplayers.dart';
 import 'dart:typed_data';
 import 'level_data.dart';
 
+// Collision system data structures
+class RayIntersection {
+  final Offset point;
+  final double distance;
+  
+  RayIntersection({required this.point, required this.distance});
+}
+
+class BlockCollision {
+  final Block block;
+  final int blockIndex;
+  final Offset intersectionPoint;
+  final Offset surfaceNormal;
+  final double distance;
+  final Rect rect;
+  
+  BlockCollision({
+    required this.block,
+    required this.blockIndex,
+    required this.intersectionPoint,
+    required this.surfaceNormal,
+    required this.distance,
+    required this.rect,
+  });
+}
+
+class CollisionResult {
+  final Offset finalPosition;
+  final Offset finalVelocity;
+  final List<BlockCollision> hitBlocks;
+  
+  CollisionResult({
+    required this.finalPosition,
+    required this.finalVelocity,
+    required this.hitBlocks,
+  });
+}
+
 extension OffsetExt on Offset {
   Offset normalized() {
     final d = distance;
@@ -47,6 +85,7 @@ class GyroPongApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Gyro Pong',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black),
       home: const DifficultySelectionScreen(),
     );
@@ -326,6 +365,7 @@ class _GamePageState extends State<GamePage> {
   int highScore = 0;
   int lives = 3;
   bool running = false;
+  bool _continuingFromLifeLoss = false;
   bool _isStageCleared = false;
   bool _isGameWon = false;
 
@@ -341,7 +381,6 @@ class _GamePageState extends State<GamePage> {
   double momentum = 0.1; // Momentum factor for smooth stopping
   double _lastTiltRate = 0.0;
   double _lastAccelX = 0.0;
-  bool _showDebugOverlay = false;
   double _fps = 60.0;
   bool soundEnabled = true;
   bool hapticsEnabled = true;
@@ -391,6 +430,7 @@ class _GamePageState extends State<GamePage> {
     // generate synthetic beep sounds (layered)
     _regenerateSounds();
   }
+
 
   void _applyDifficultySettings() {
     setState(() {
@@ -594,9 +634,9 @@ class _GamePageState extends State<GamePage> {
   }
 
   void _loadAds() {
-    // Banner (test ad unit id)
+    // Banner (production ad unit id)
     _bannerAd = BannerAd(
-      adUnitId: 'ca-app-pub-3940256099942544/6300978111',
+      adUnitId: 'ca-app-pub-3472536634074099/4507037168',
       request: const AdRequest(),
       size: AdSize.banner,
       listener: BannerAdListener(
@@ -608,13 +648,13 @@ class _GamePageState extends State<GamePage> {
     );
     _bannerAd!.load();
 
-    // Interstitial (test id)
+    // Interstitial (production ad unit id)
     _loadInterstitial();
   }
 
   void _loadInterstitial() {
     InterstitialAd.load(
-      adUnitId: 'ca-app-pub-3940256099942544/1033173712',
+      adUnitId: 'ca-app-pub-3472536634074099/3026434530',
       request: const AdRequest(),
       adLoadCallback: InterstitialAdLoadCallback(
         onAdLoaded: (ad) {
@@ -791,66 +831,48 @@ class _GamePageState extends State<GamePage> {
     // Physics update now handles only ball and block collisions
     // Paddle movement is handled directly in render loop for zero-lag response
 
-    // Update ball
-    ballPos = ballPos! + ballVel! * dt;
-
-    // Ball-block collisions (simple AABB collision per block)
-    if (blocks.isNotEmpty) {
-      // define block area: top margin adjusted for HUD panel, block area height 180
-      final topMargin = 140.0; // Generous margin to ensure no overlap with HUD panel
-      final blockAreaHeight = 180.0;
-      final cols = 8;
-      final rows = 5;
-      final gap = 6.0;
-      final blockWidth = (screenWidth - (cols + 1) * gap) / cols;
-      final blockHeight = (blockAreaHeight - (rows + 1) * gap) / rows;
-
-      for (int i = blocks.length - 1; i >= 0; i--) {
-        final b = blocks[i];
-        final left = gap + b.col * (blockWidth + gap);
-        final top = topMargin + gap + b.row * (blockHeight + gap);
-        final rect = Rect.fromLTWH(left, top, blockWidth, blockHeight);
-        // closest point to ball
-        final cx = ballPos!.dx.clamp(rect.left, rect.right);
-        final cy = ballPos!.dy.clamp(rect.top, rect.bottom);
-        final d = Offset(ballPos!.dx - cx, ballPos!.dy - cy);
-        if (d.distance <= ballRadius) {
-          // hit
-          b.health -= 1;
-          // reflect ball: simple invert y and nudge x based on hit side
-          // determine overlap side
-          final center = rect.center;
-          final dx = (ballPos!.dx - center.dx).clamp(-1.0, 1.0);
-          ballVel = Offset(ballVel!.dx + dx * 60, -ballVel!.dy.abs());
-          // award score when destroyed
-          if (b.health <= 0) {
-            blocks.removeAt(i);
-            remainingBlocks = blocks.length;
-            score += (100 * _scoreMultiplier).round();
-            if (remainingBlocks == 0) {
-              _stageCleared();
-            }
-          } else {
-            score += (20 * _scoreMultiplier).round(); // damage points
-          }
-          if (score > highScore) {
-            highScore = score;
-            _saveHighScore();
-          }
-          // small break to avoid multiple collisions in same tick
-          break;
-        }
-      }
+    // Store previous position for continuous collision detection
+    final oldPos = ballPos!;
+    final newPos = oldPos + ballVel! * dt;
+    
+    // Perform continuous collision detection with blocks
+    final collisionResult = _performContinuousCollisionDetection(oldPos, newPos);
+    
+    if (collisionResult != null) {
+      // Process collision events (damage/destruction)
+      _processCollisionEvents(collisionResult.hitBlocks);
+      
+      // Apply physics response (reflection)
+      ballPos = collisionResult.finalPosition;
+      ballVel = collisionResult.finalVelocity;
+    } else {
+      // No collision, update position normally
+      ballPos = newPos;
     }
 
+    // Wall collisions (after block collisions)
+    _handleWallCollisions();
+    
+    // Paddle collision
+    _handlePaddleCollision();
+    
+    // Ball lost check
+    _handleBallLoss();
+  }
+
+  void _handleWallCollisions() {
     // Walls (left/right)
     if (ballPos!.dx - ballRadius < 0) {
       ballPos = Offset(ballRadius, ballPos!.dy);
       ballVel = Offset(-ballVel!.dx, ballVel!.dy);
+      // Ensure constant speed after wall bounce
+      ballVel = ballVel! / ballVel!.distance * _ballSpeed;
     }
     if (ballPos!.dx + ballRadius > screenWidth) {
       ballPos = Offset(screenWidth - ballRadius, ballPos!.dy);
       ballVel = Offset(-ballVel!.dx, ballVel!.dy);
+      // Ensure constant speed after wall bounce
+      ballVel = ballVel! / ballVel!.distance * _ballSpeed;
     }
 
     // top wall / ceiling - positioned below HUD panel
@@ -858,8 +880,12 @@ class _GamePageState extends State<GamePage> {
     if (ballPos!.dy - ballRadius < ceilingY) {
       ballPos = Offset(ballPos!.dx, ceilingY + ballRadius);
       ballVel = Offset(ballVel!.dx, -ballVel!.dy);
+      // Ensure constant speed after ceiling bounce
+      ballVel = ballVel! / ballVel!.distance * _ballSpeed;
     }
+  }
 
+  void _handlePaddleCollision() {
     // Paddle collision
     final paddleTop = screenHeight -
         paddleHeight -
@@ -882,10 +908,17 @@ class _GamePageState extends State<GamePage> {
         double newDy = -ballVel!.dy.abs(); // Ensure it always goes up
 
         ballVel = Offset(newDx, newDy);
-        // Normalize and apply constant speed
+        // Normalize and apply constant speed - ensure exact speed consistency
         final currentSpeed = ballVel!.distance;
         if (currentSpeed > 0) {
           ballVel = ballVel! / currentSpeed * _ballSpeed;
+        }
+        
+        // Additional verification: ensure speed is exactly correct after normalization
+        final verifySpeed = ballVel!.distance;
+        if ((verifySpeed - _ballSpeed).abs() > 0.1) {
+          // Recalculate if there's any significant deviation
+          ballVel = ballVel! / verifySpeed * _ballSpeed;
         }
 
         // Angle correction to prevent extreme horizontal/vertical bounces
@@ -918,7 +951,9 @@ class _GamePageState extends State<GamePage> {
         }
       }
     }
+  }
 
+  void _handleBallLoss() {
     // Ball lost
     if (ballPos!.dy - ballRadius > screenHeight) {
       running = false;
@@ -926,19 +961,195 @@ class _GamePageState extends State<GamePage> {
       if (lives <= 0) {
         _showGameOver();
       } else {
-        // Reset ball and paddle for the next turn
+        // Reset ball and paddle for the next turn, but keep level/blocks/score
         _resetBallAndPaddle();
-        // Briefly pause before resuming
-        Future.delayed(const Duration(seconds: 1), () {
-          if (mounted) {
-            setState(() {
-              running = true;
-              _stopwatch.start();
-              lastTick = _stopwatch.elapsed.inMilliseconds / 1000.0;
-            });
-          }
+        setState(() {
+          running = false;
+          _continuingFromLifeLoss = true;
         });
       }
+    }
+  }
+
+  CollisionResult? _performContinuousCollisionDetection(Offset startPos, Offset endPos) {
+    if (blocks.isEmpty) return null;
+    
+    // Block layout constants
+    final topMargin = 140.0;
+    final blockAreaHeight = 180.0;
+    final cols = 8;
+    final rows = 5;
+    final gap = 6.0;
+    final blockWidth = (screenWidth - (cols + 1) * gap) / cols;
+    final blockHeight = (blockAreaHeight - (rows + 1) * gap) / rows;
+    
+    List<BlockCollision> hitBlocks = [];
+    Offset rayDirection = (endPos - startPos).normalized();
+    double rayLength = (endPos - startPos).distance;
+    
+    // Check collision with each block using ray-AABB intersection
+    for (int i = 0; i < blocks.length; i++) {
+      final block = blocks[i];
+      final left = gap + block.col * (blockWidth + gap);
+      final top = topMargin + gap + block.row * (blockHeight + gap);
+      final rect = Rect.fromLTWH(left, top, blockWidth, blockHeight);
+      
+      // Expand rectangle by ball radius for proper collision detection
+      final expandedRect = Rect.fromLTRB(
+        rect.left - ballRadius,
+        rect.top - ballRadius,
+        rect.right + ballRadius,
+        rect.bottom + ballRadius,
+      );
+      
+      // Perform ray-AABB intersection test
+      final intersection = _rayAABBIntersection(startPos, rayDirection, rayLength, expandedRect);
+      
+      if (intersection != null) {
+        // Calculate surface normal at intersection point
+        final normal = _calculateSurfaceNormal(intersection.point, rect);
+        
+        hitBlocks.add(BlockCollision(
+          block: block,
+          blockIndex: i,
+          intersectionPoint: intersection.point,
+          surfaceNormal: normal,
+          distance: intersection.distance,
+          rect: rect,
+        ));
+      }
+    }
+    
+    if (hitBlocks.isEmpty) return null;
+    
+    // Sort by distance to handle closest collision first
+    hitBlocks.sort((a, b) => a.distance.compareTo(b.distance));
+    
+    // Process the closest collision
+    final closest = hitBlocks.first;
+    
+    // Calculate reflection
+    final reflectedVelocity = _calculateReflection(ballVel!, closest.surfaceNormal);
+    
+    // Position ball at collision point
+    final collisionPoint = startPos + rayDirection * closest.distance;
+    
+    return CollisionResult(
+      finalPosition: collisionPoint,
+      finalVelocity: reflectedVelocity,
+      hitBlocks: hitBlocks,
+    );
+  }
+
+  RayIntersection? _rayAABBIntersection(Offset rayStart, Offset rayDir, double rayLength, Rect aabb) {
+    // Ray-AABB intersection using slab method
+    double tMin = 0.0;
+    double tMax = rayLength;
+    
+    // Check X slab
+    if (rayDir.dx.abs() < 0.0001) {
+      // Ray parallel to X planes
+      if (rayStart.dx < aabb.left || rayStart.dx > aabb.right) {
+        return null; // No intersection
+      }
+    } else {
+      double t1 = (aabb.left - rayStart.dx) / rayDir.dx;
+      double t2 = (aabb.right - rayStart.dx) / rayDir.dx;
+      
+      if (t1 > t2) {
+        double temp = t1;
+        t1 = t2;
+        t2 = temp;
+      }
+      
+      tMin = max(tMin, t1);
+      tMax = min(tMax, t2);
+      
+      if (tMin > tMax) return null;
+    }
+    
+    // Check Y slab  
+    if (rayDir.dy.abs() < 0.0001) {
+      // Ray parallel to Y planes
+      if (rayStart.dy < aabb.top || rayStart.dy > aabb.bottom) {
+        return null; // No intersection
+      }
+    } else {
+      double t1 = (aabb.top - rayStart.dy) / rayDir.dy;
+      double t2 = (aabb.bottom - rayStart.dy) / rayDir.dy;
+      
+      if (t1 > t2) {
+        double temp = t1;
+        t1 = t2;
+        t2 = temp;
+      }
+      
+      tMin = max(tMin, t1);
+      tMax = min(tMax, t2);
+      
+      if (tMin > tMax) return null;
+    }
+    
+    if (tMin < 0) return null; // Intersection behind ray start
+    
+    return RayIntersection(
+      point: rayStart + rayDir * tMin,
+      distance: tMin,
+    );
+  }
+
+  Offset _calculateSurfaceNormal(Offset intersectionPoint, Rect blockRect) {
+    // Calculate distances to each edge
+    final distToLeft = (intersectionPoint.dx - blockRect.left).abs();
+    final distToRight = (blockRect.right - intersectionPoint.dx).abs();
+    final distToTop = (intersectionPoint.dy - blockRect.top).abs();
+    final distToBottom = (blockRect.bottom - intersectionPoint.dy).abs();
+    
+    final minDist = [distToLeft, distToRight, distToTop, distToBottom].reduce(min);
+    
+    // Return normal for the closest edge
+    if (minDist == distToLeft) return const Offset(-1, 0); // Left face
+    if (minDist == distToRight) return const Offset(1, 0);  // Right face
+    if (minDist == distToTop) return const Offset(0, -1);   // Top face
+    return const Offset(0, 1);  // Bottom face
+  }
+
+  Offset _calculateReflection(Offset velocity, Offset normal) {
+    // Reflect velocity across normal: v' = v - 2(v·n)n
+    final dotProduct = velocity.dx * normal.dx + velocity.dy * normal.dy;
+    final reflection = velocity - normal * (2 * dotProduct);
+    
+    // Normalize and maintain ball speed
+    return reflection.normalized() * _ballSpeed;
+  }
+
+  void _processCollisionEvents(List<BlockCollision> hitBlocks) {
+    for (int i = hitBlocks.length - 1; i >= 0; i--) {
+      final collision = hitBlocks[i];
+      final block = collision.block;
+      
+      // Damage block
+      block.health -= 1;
+      
+      // Award score and handle destruction
+      if (block.health <= 0) {
+        blocks.removeAt(collision.blockIndex);
+        remainingBlocks = blocks.length;
+        score += (100 * _scoreMultiplier).round();
+        if (remainingBlocks == 0) {
+          _stageCleared();
+        }
+      } else {
+        score += (20 * _scoreMultiplier).round(); // damage points
+      }
+      
+      if (score > highScore) {
+        highScore = score;
+        _saveHighScore();
+      }
+      
+      // Only process first collision to avoid multiple hits per frame
+      break;
     }
   }
 
@@ -1012,6 +1223,23 @@ class _GamePageState extends State<GamePage> {
     });
   }
 
+  void _continueAfterLifeLoss() {
+    setState(() {
+      _continuingFromLifeLoss = false;
+      running = true;
+      _resetBallAndPaddle();
+      // Don't reset level, blocks, or score - just restart ball position
+      // start game loop
+      lastTick = 0;
+      _timeAccumulator = 0.0;
+      _stopwatch.reset();
+      _stopwatch.start();
+      _gameTimer?.cancel();
+      _gameTimer = Timer.periodic(
+          const Duration(milliseconds: 16), (_) => _onTick(_stopwatch.elapsed));
+    });
+  }
+
   void _resetGame({bool resetScore = true}) {
     setState(() {
       if (resetScore) {
@@ -1019,12 +1247,15 @@ class _GamePageState extends State<GamePage> {
         level = 1;
         lives = 3;
       }
+      _continuingFromLifeLoss = false;
       _isStageCleared = false;
       _isGameWon = false;
       running = true;
       _resetBallAndPaddle();
-      // start level blocks
-      _startLevel(level);
+      // start level blocks only if it's a full reset or if blocks are cleared
+      if (resetScore || blocks.isEmpty) {
+        _startLevel(level);
+      }
       // start game loop
       lastTick = 0;
       _timeAccumulator = 0.0;
@@ -1056,9 +1287,9 @@ class _GamePageState extends State<GamePage> {
 
   @override
   void dispose() {
+    _gameTimer?.cancel();
     _gyroSub?.cancel();
     _accelSub?.cancel();
-    _gameTimer?.cancel();
     _stopwatch.stop();
     _bannerAd?.dispose();
     _interstitialAd?.dispose();
@@ -1104,7 +1335,11 @@ class _GamePageState extends State<GamePage> {
                 child: GestureDetector(
                   onTap: () {
                     if (!running) {
-                      _resetGame();
+                      if (_continuingFromLifeLoss) {
+                        _continueAfterLifeLoss();
+                      } else {
+                        _resetGame();
+                      }
                     }
                   },
                   child: CustomPaint(
@@ -1128,7 +1363,6 @@ class _GamePageState extends State<GamePage> {
                       highScore: highScore,
                       running: running,
                       blocks: blocks,
-                      showDebug: _showDebugOverlay,
                     ),
                   ),
                 ),
@@ -1333,7 +1567,15 @@ class _GamePageState extends State<GamePage> {
               // Start hint
               if (!running && !_isStageCleared && !_isGameWon)
                 Center(
-                  child: Container(
+                  child: GestureDetector(
+                    onTap: () {
+                      if (_continuingFromLifeLoss) {
+                        _continueAfterLifeLoss();
+                      } else {
+                        _resetGame();
+                      }
+                    },
+                    child: Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.7),
@@ -1353,7 +1595,7 @@ class _GamePageState extends State<GamePage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (lives == 3 && level == 1) ...const [
+                        if (lives == 3 && level == 1 && !_continuingFromLifeLoss) ...const [
                           Icon(
                             Icons.sports_esports,
                             color: Colors.white,
@@ -1367,6 +1609,21 @@ class _GamePageState extends State<GamePage> {
                               fontSize: 32,
                               fontWeight: FontWeight.bold,
                               letterSpacing: 2,
+                            ),
+                          ),
+                        ] else if (_continuingFromLifeLoss) ...const [
+                          Icon(
+                            Icons.favorite_border,
+                            color: Colors.redAccent,
+                            size: 48,
+                          ),
+                          SizedBox(height: 16),
+                          Text(
+                            'Life Lost',
+                            style: TextStyle(
+                              color: Colors.redAccent,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ] else ...const [
@@ -1388,9 +1645,9 @@ class _GamePageState extends State<GamePage> {
                             children: [
                               const Icon(Icons.touch_app, color: Colors.white70, size: 20),
                               const SizedBox(width: 8),
-                              const Text(
-                                'Tap to start',
-                                style: TextStyle(
+                              Text(
+                                _continuingFromLifeLoss ? 'Tap to continue' : 'Tap to start',
+                                style: const TextStyle(
                                   color: Colors.white70,
                                   fontSize: 16,
                                 ),
@@ -1400,6 +1657,7 @@ class _GamePageState extends State<GamePage> {
                         ),
                       ],
                     ),
+                  ),
                   ),
                 ),
               if (_showModeIndicator)
@@ -1530,65 +1788,7 @@ class _GamePageState extends State<GamePage> {
                     ),
                   ),
                 ),
-              // Debug overlay
-              if (_showDebugOverlay && running)
-                Positioned(
-                  left: 8,
-                  top: 100,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('tilt: ${_lastTiltRate.toStringAsFixed(4)}',
-                            style: const TextStyle(color: Colors.white)),
-                        Text('velocity: ${_paddleVelocity.toStringAsFixed(4)}',
-                            style: const TextStyle(color: Colors.white)),
-                        Text('paddleX: ${paddleX.toStringAsFixed(1)}',
-                            style: const TextStyle(color: Colors.white70)),
-                        Text('fps: ${_fps.toStringAsFixed(1)}',
-                            style: const TextStyle(color: Colors.white70)),
-                        Text('deadzone: ${deadzone.toStringAsFixed(3)}',
-                            style: const TextStyle(color: Colors.white70)),
-                        Text('sensitivity: ${sensitivity.toStringAsFixed(1)}',
-                            style: const TextStyle(color: Colors.white70)),
-                      ],
-                    ),
-                  ),
-                ),
               ],
-            ),
-          ),
-          floatingActionButton: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: _showDebugOverlay 
-                  ? [Colors.orange.withOpacity(0.8), Colors.red.withOpacity(0.8)]
-                  : [Colors.white.withOpacity(0.1), Colors.white.withOpacity(0.2)],
-              ),
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [
-                BoxShadow(
-                  color: (_showDebugOverlay ? Colors.orange : Colors.white).withOpacity(0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: FloatingActionButton(
-              backgroundColor: Colors.transparent,
-              elevation: 0,
-              child: Icon(
-                  _showDebugOverlay
-                      ? Icons.bug_report
-                      : Icons.bug_report_outlined,
-                  color: Colors.white),
-              onPressed: () =>
-                  setState(() => _showDebugOverlay = !_showDebugOverlay),
             ),
           ),
         );
@@ -1608,7 +1808,6 @@ class _GamePainter extends CustomPainter {
   final int highScore;
   final bool running;
   final List<Block> blocks;
-  final bool showDebug;
 
   _GamePainter({
     required this.paddleCenter,
@@ -1621,7 +1820,6 @@ class _GamePainter extends CustomPainter {
     required this.highScore,
     required this.running,
     required this.blocks,
-    required this.showDebug,
   });
 
   @override
@@ -1661,34 +1859,7 @@ class _GamePainter extends CustomPainter {
     // Ball
     canvas.drawCircle(ballPos, ballRadius, paint);
 
-    // Game area boundary line (visible separator for debugging)
-    final boundaryPaint = Paint()
-      ..color = Colors.cyan.withOpacity(0.3)
-      ..strokeWidth = 2;
-    canvas.drawLine(
-      Offset(0, 135), // Just below HUD area with proper margin
-      Offset(size.width, 135),
-      boundaryPaint,
-    );
-    
-    // Block area start indicator (temporary debug)
-    final blockAreaPaint = Paint()
-      ..color = Colors.red.withOpacity(0.5)
-      ..strokeWidth = 3;
-    canvas.drawLine(
-      Offset(0, 140.0), // Shows where blocks actually start (matches topMargin value)
-      Offset(size.width, 140.0),
-      blockAreaPaint,
-    );
 
-    // Debug trajectory line
-    if (showDebug && ballVel != null && ballVel!.distance > 0) {
-      final debugPaint = Paint()
-        ..color = Colors.greenAccent.withOpacity(0.7)
-        ..strokeWidth = 2;
-      canvas.drawLine(
-          ballPos, ballPos + ballVel!.normalized() * 40, debugPaint);
-    }
   }
 
   @override

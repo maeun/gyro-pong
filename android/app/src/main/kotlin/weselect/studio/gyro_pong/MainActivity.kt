@@ -1,4 +1,4 @@
-package com.example.gyro_pong
+package weselect.studio.gyro_pong
 
 import io.flutter.embedding.android.FlutterActivity
 
